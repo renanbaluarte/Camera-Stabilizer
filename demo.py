@@ -5,26 +5,17 @@ Uso:
   .venv/bin/python demo.py clipe.mp4  # arquivo de video
 
 Le os parametros de estabilizacao de config/default_settings.json (edite o
-arquivo para ajustar intensidade: kalman_q mais baixo = suavizacao mais forte).
+arquivo para ajustar intensidade: strength = quanto do tremor remover, 0 a 1).
 
 Pressione 'q' para sair.
 """
-import json
 import sys
-from pathlib import Path
 
 import cv2
 import numpy as np
 
+from camera_to_obs import load_config
 from src.stabilizer import VideoStabilizer
-
-CONFIG_PATH = Path(__file__).parent / "config" / "default_settings.json"
-
-
-def load_config():
-    if CONFIG_PATH.exists():
-        return json.loads(CONFIG_PATH.read_text())
-    return {}
 
 
 def main(source):

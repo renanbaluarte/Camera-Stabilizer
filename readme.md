@@ -1,17 +1,18 @@
 # Camera Stabilizer for OBS
 
-A high-performance video stabilization plugin for OBS Studio designed to eliminate vibration and jitter from fixed PTZ cameras in high-vibration environments (such as churches with metal structures). Implements optical flow motion estimation combined with Kalman filtering and adaptive cropping to maintain video quality while removing unwanted shake.
+A high-performance video stabilization plugin for OBS Studio designed to eliminate vibration and jitter from fixed PTZ cameras in high-vibration environments (such as churches with metal structures). Implements optical flow motion estimation combined with a high-pass baseline filter and adaptive cropping to maintain video quality while removing unwanted shake.
 
 ## Key Features
 
 - Optical flow-based motion estimation with frame downsampling for low latency
-- Kalman filter smoothing with dynamic adjustment for intentional motion detection
+- High-pass baseline filter that cancels vibration while letting intentional motion through
 - Adaptive crop management that grows when needed, eases back gradually
 - Distinguish vibration from intentional pan/tilt/zoom movements
 - Live preview with debug overlay (motion vectors, FPS, processing time, crop ratio)
-- Configurable sensitivity and crop limits via GUI
+- Sensitivity, smoothing and crop limits configurable live from the GUI, with no restart
 - Low latency: average 10ms per 1080p frame (well below 33ms budget for 30fps)
 - Runs as standalone app publishing to OBS Virtual Camera (isolated from OBS crashes)
+- Automatic reconnect: if the capture card drops out or processing fails, it reopens itself
 
 ## System Requirements
 
@@ -62,8 +63,9 @@ python app.py
 2. Configure settings:
    - **Source**: Camera index (usually 0) or video file path
    - **Resolution**: Width, height, and FPS (default 1920x1080 @ 30fps)
-   - **Sensitivity**: 1-100 slider (higher = more aggressive stabilization)
-   - **Max Crop**: 80-95% (maximum image retention without cropping beyond this)
+   - **Sensitivity**: 0-100 slider, the fraction of detected shake actually cancelled (100 = fully locked)
+   - **Smoothing**: 0.2-3.0s, how slowly the "home position" tracks the camera. Motion slower than this is kept, faster is cancelled
+   - **Max Crop**: 80-98%, the smallest fraction of the picture the stabilizer may keep when it needs margin
    - **Detect Intentional Motion**: Enable to preserve pan/tilt/zoom movements
    - **Show Debug Overlay**: Display real-time motion vectors and performance metrics
 3. Click "Start"
@@ -94,10 +96,10 @@ Edit `config/default_settings.json` to adjust default parameters:
 
 ```json
 {
-  "crop_ratio": 0.97,
-  "min_crop_ratio": 0.8,
-  "kalman_q": 0.001,
-  "kalman_r": 0.1,
+  "strength": 1.0,
+  "smoothing_s": 1.0,
+  "max_keep_ratio": 0.98,
+  "min_keep_ratio": 0.85,
   "detect_intentional_motion": true
 }
 ```
@@ -106,19 +108,23 @@ Edit `config/default_settings.json` to adjust default parameters:
 
 | Parameter                   | Range        | Description                                                |
 | --------------------------- | ------------ | ---------------------------------------------------------- |
-| `crop_ratio`                | 0.80-0.99    | Initial crop margin (0.97 = keep 97% of frame)             |
-| `min_crop_ratio`            | 0.80-0.95    | Floor: never crop beyond this limit                        |
-| `kalman_q`                  | 1e-4 to 1e-1 | Process noise (lower = smoother, laggy; higher = snappier) |
-| `kalman_r`                  | 0.01 to 1.0  | Measurement noise (how much to trust optical flow)         |
+| `strength`                  | 0.0-1.0      | Fraction of detected shake cancelled (1.0 = fully locked)  |
+| `smoothing_s`               | 0.2-3.0      | Baseline time constant in seconds; motion slower than this is preserved |
+| `max_keep_ratio`            | 0.80-1.00    | Least-cropped state, used when the picture is calm         |
+| `min_keep_ratio`            | 0.80-0.95    | Floor: never crop beyond this limit                        |
 | `detect_intentional_motion` | true/false   | Enable pan/tilt/zoom preservation                          |
 
 ### Sensitivity Slider (GUI Only)
 
-Maps 1-100 to Kalman Q on a logarithmic scale:
+Maps directly to `strength`, the fraction of the detected deviation that gets cancelled:
 
-- 1 = maximum smoothing (may lag)
-- 50 = balanced (default: ~0.003)
-- 100 = maximum responsiveness (may over-correct)
+- 0 = stabilization off (passthrough)
+- 50 = roughly half the shake removed
+- 100 = fully locked (default)
+
+Measured on a simulated 8Hz/13Hz vertical shake, the slider moves residual
+shake through 0% / 23% / 47% / 72% / 97% suppression across its travel, so
+every position is visibly different.
 
 ## Performance Specifications
 
@@ -126,7 +132,8 @@ Tested on 1080p30 video from various capture cards:
 
 - Average processing time: 10.2ms per frame
 - Peak processing time: 11.9ms per frame
-- Jitter reduction: 70% on synthetic shake
+- Vertical shake suppression: 97% on a simulated 8Hz/13Hz metal-structure shake
+- Crop actually used for that shake: 93% of the frame retained
 - Frame rate: Maintains 30fps without dropping frames
 - Crop overhead: Minimal (downsampled optical flow tracking)
 - Memory: <150MB total
@@ -149,8 +156,10 @@ Distinguishes between:
 
 Ratio of net displacement to total path length determines which filter strength applies:
 
-- Pure oscillation (ratio ~0): Full Kalman smoothing
-- Sustained motion (ratio ~1): Reduced smoothing, movement passes through
+- Pure oscillation (ratio ~0): baseline held slow, the shake is cancelled
+- Sustained motion (ratio ~1): baseline snaps to 0.12s so the pan passes through
+
+Measured effect: a 118px pan is preserved at 95% with detection on, 63% with it off.
 
 ### Adaptive Cropping
 
@@ -161,14 +170,23 @@ Crop margin dynamically adjusts to motion demands:
 - Bounded between floor (80%) and ceiling (97%)
 - Prevents visual "pumping" when crop edges flicker
 
-### Kalman Filtering
+### Baseline Filtering (High-Pass)
 
-4-state Kalman filter tracks position and velocity:
+The camera is bolted to a vibrating structure, not handheld: its true position
+is a fixed "home" that the vibration oscillates around. The stabilizer tracks
+that home position with a slow exponential baseline and cancels everything
+above it, which is the high-pass filter the original spec called for.
 
-- State: [x, y, vx, vy]
-- Process noise (Q): Tuned per sensitivity setting
-- Measurement noise (R): Adapts based on motion classification
-- Smooths trajectory while preserving intentional movements
+- Baseline: exponential, 1.0s time constant by default
+- Correction: `strength * (baseline - trajectory)`, clamped to the crop margin
+- Anti-windup: when the correction hits the crop limit the baseline is pulled
+  to match, so the picture never parks against the crop edge and stays there
+
+An earlier version used a 4-state constant-velocity Kalman filter here. Its
+velocity state is excited by the vibration, so the estimate chases the shake
+instead of ignoring it; measured across its entire usable tuning range it
+capped out between 72% and 92% suppression. The position-only baseline
+measures 97% with a single intuitive knob.
 
 ## OBS Integration
 
@@ -183,6 +201,7 @@ Benefits:
 
 - If stabilizer crashes, OBS remains live
 - Can restart without stopping broadcast
+- Reconnects on its own if the capture card drops out mid-service
 - GUI runs independently for parameter tuning
 - No modifications to OBS installation required
 
@@ -206,6 +225,16 @@ Benefits:
 - Verify camera index with OBS's own Video Capture Device to confirm it works
 - Try `--width 1280 --height 720` if 1080p is not supported
 
+### The picture froze mid-service
+
+The stabilizer reopens the capture source on its own every 2 seconds after a
+dropout, and the status line shows "reconectando..." while it retries. Current
+slider values are re-applied to the new session, so tuning is not lost.
+
+Recovery is not automatic in one case: a capture card that hangs without
+returning an error leaves the read blocked, and nothing times it out. If that
+happens, press Parar and Iniciar.
+
 ### No virtual camera appears in OBS
 
 - Ensure OBS 32.1.2+ is installed (provides Virtual Camera driver)
@@ -216,20 +245,21 @@ Benefits:
 ### High CPU usage or lag
 
 - Reduce resolution (try 1280x720 instead of 1920x1080)
-- Lower sensitivity slider (higher Kalman smoothing = less CPU load)
+- Lower the sensitivity slider (CPU cost is dominated by optical flow, not the filter)
 - Disable debug overlay (reduces rendering overhead)
 
 ### Frames look blurry or cropped too much
 
-- Reduce sensitivity (lower Q = more aggressive smoothing)
-- Increase "Max Crop" limit to allow more dynamic adjustment
+- Lower "Max Crop" (e.g. 85%) so the stabilizer has more margin to work with
+- Reduce sensitivity if the crop opens further than you want
 - Verify capture card supports MJPEG codec (more efficient)
 
 ### Motion detection too aggressive / too weak
 
-- Adjust Kalman Q via sensitivity slider or edit `config/default_settings.json`
+- Adjust the sensitivity slider, or edit `strength` in `config/default_settings.json`
 - If pan/tilt is being suppressed: enable "Detect Intentional Motion"
-- Check `kalman_r` if measurement is inconsistent
+- If shake remains at sensitivity 100, the shake exceeds the crop budget: lower "Max Crop"
+- Raise "Smoothing" for steadier framing, lower it to release intentional moves sooner
 
 ## Building from Source
 
@@ -263,6 +293,9 @@ python test_stabilizer.py
 Tests:
 
 - Jitter reduction (synthetic shake)
+- Vertical shake suppression (8Hz/13Hz metal-structure simulation)
+- Live retuning takes effect without a restart
+- Reconnect loop retries a dead camera and stops cleanly when asked
 - Pan/tilt preservation (intentional motion)
 - Latency budget compliance (< 33ms per frame)
 
@@ -290,7 +323,7 @@ CameraStabilizer/
 The stabilizer prioritizes latency over CPU load:
 
 1. Optical flow computed on 25% downsampled frames
-2. Kalman filter is 4-state (lightweight)
+2. Baseline filter is two exponential updates per frame (negligible)
 3. Crop adjustments are frame-local (no multi-frame buffering)
 4. No thread synchronization overhead (single-threaded pipeline)
 

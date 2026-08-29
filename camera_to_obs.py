@@ -27,6 +27,7 @@ from pyvirtualcam import PixelFormat
 from src.stabilizer import VideoStabilizer
 
 CONFIG_PATH = Path(__file__).parent / "config" / "default_settings.json"
+RETRY_DELAY_S = 2.0
 
 
 def load_config():
@@ -53,11 +54,13 @@ def open_capture(source, width, height, fps):
 
 
 def run_pipeline(source, fps=30, width=1920, height=1080, config=None,
-                  frame_callback=None, stop_event=None, log=print):
+                  frame_callback=None, stop_event=None, on_stabilizer=None, log=print):
     """Loop bloqueante: captura -> estabiliza -> publica na camera virtual.
 
     frame_callback(original, stabilized, stats), se fornecido, e chamado a
-    cada frame (usado pela GUI pra preview + status). stop_event
+    cada frame (usado pela GUI pra preview + status). on_stabilizer(stab), se
+    fornecido, recebe o VideoStabilizer assim que ele existe, pra quem chama
+    poder ajustar a sintonia em tempo real via stab.set_tuning(). stop_event
     (threading.Event), se fornecido, encerra o loop de forma limpa quando
     setado.
     """
@@ -69,6 +72,8 @@ def run_pipeline(source, fps=30, width=1920, height=1080, config=None,
             log(f"aviso: pedi {width}x{height} mas a fonte negociou {w}x{h}")
 
         stab = VideoStabilizer(w, h, fps=fps, **(config or {}))
+        if on_stabilizer:
+            on_stabilizer(stab)
 
         with pyvirtualcam.Camera(width=w, height=h, fps=fps, fmt=PixelFormat.BGR) as vcam:
             log(f"camera virtual ativa: {vcam.device} ({w}x{h} @ {fps}fps)")
@@ -90,10 +95,47 @@ def run_pipeline(source, fps=30, width=1920, height=1080, config=None,
                         "frame_ms": frame_ms[-1],
                         "crop_ratio": stab.crop_ratio_now,
                         "motion": stab.last_motion,
+                        "correction": stab.last_correction,
+                        "intentional": stab.intentional_ratio,
                     }
                     frame_callback(frame, stabilized, stats)
     finally:
         cap.release()
+
+
+def run_with_restart(source, retry_delay=RETRY_DELAY_S, stop_event=None, log=print, **kwargs):
+    """Mantem o pipeline no ar durante o culto: se a placa desconectar ou o
+    processamento estourar, reabre sozinho. So para quando stop_event for
+    setado. Arquivos de video rodam uma vez so -- chegar ao fim deles e
+    termino normal, nao falha.
+
+    ponytail: cobre desconexao e excecao, que sao as falhas comuns. Nao cobre
+    read() que trava sem nunca retornar (placa que enforca em vez de dar
+    erro); isso pediria ler numa thread separada com timeout, que e o upgrade
+    se chegar a acontecer.
+    """
+    if not str(source).isdigit():
+        run_pipeline(source, stop_event=stop_event, log=log, **kwargs)
+        return
+
+    attempt = 0
+    while stop_event is None or not stop_event.is_set():
+        try:
+            run_pipeline(source, stop_event=stop_event, log=log, **kwargs)
+            # Retorno normal de uma camera significa que os frames pararam de
+            # chegar -- placa desconectada, driver reiniciado, cabo solto.
+            log("a fonte parou de entregar frames (desconectou?)")
+        except Exception as exc:
+            log(f"erro no processamento: {exc}")
+
+        if stop_event is not None and stop_event.is_set():
+            return
+        attempt += 1
+        log(f"reconectando em {retry_delay:g}s (tentativa {attempt})...")
+        if stop_event is not None:
+            stop_event.wait(retry_delay)  # acorda na hora se mandarem parar
+        else:
+            time.sleep(retry_delay)
 
 
 def main():
@@ -107,7 +149,8 @@ def main():
     config = load_config()
     print(f"config: {config or 'padrao (sem config/default_settings.json)'}")
     try:
-        run_pipeline(args.source, fps=args.fps, width=args.width, height=args.height, config=config)
+        run_with_restart(args.source, fps=args.fps, width=args.width,
+                         height=args.height, config=config)
     except KeyboardInterrupt:
         pass
 

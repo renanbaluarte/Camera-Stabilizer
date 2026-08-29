@@ -1,7 +1,9 @@
-"""Self-check: synthetic jitter in, verify the stabilizer damps it out.
+"""Self-checks: estabilizacao contra tremor sintetico, e a logica de
+reconexao do pipeline.
 
 Run directly: .venv/bin/python test_stabilizer.py
 """
+import threading
 import time
 
 import cv2
@@ -113,8 +115,128 @@ def test_processing_is_within_frame_budget():
     assert avg_ms < 33, f"processamento medio {avg_ms:.1f}ms excede o orcamento de 33ms/frame (30fps)"
 
 
+def _vertical_shake_frames(n=150, fps=30, amp=0.02 * H):
+    """Tremor vertical dominante, como a estrutura de metal da igreja:
+    fundamental ~8Hz mais um harmonico ~13Hz, quase nada na horizontal.
+
+    A amplitude e uma fracao da altura do frame (2%, ~22px em 1080p) para
+    que o tremor fique dentro do orcamento de crop, como no caso real."""
+    rng = np.random.default_rng(7)
+    margin = 80
+    scene = rng.integers(0, 255, (H + 2 * margin, W + 2 * margin, 3), dtype=np.uint8)
+    for _ in range(60):
+        x = int(rng.integers(0, scene.shape[1] - 120))
+        y = int(rng.integers(0, scene.shape[0] - 120))
+        color = tuple(int(c) for c in rng.integers(0, 255, 3))
+        cv2.rectangle(scene, (x, y), (x + 100, y + 100), color, -1)
+
+    t = np.arange(n) / fps
+    dy = amp * np.sin(2 * np.pi * 8.0 * t) + 0.4 * amp * np.sin(2 * np.pi * 13.0 * t + 1.1)
+    dx = 0.15 * amp * np.sin(2 * np.pi * 7.0 * t + 0.4)
+    frames = [scene[margin + int(round(y)):margin + int(round(y)) + H,
+                    margin + int(round(x)):margin + int(round(x)) + W].copy()
+              for x, y in zip(dx, dy)]
+    return frames, dy
+
+
+def _vertical_residual(frames, warmup=30):
+    """Desvio vertical de cada frame em relacao ao primeiro, em pixels."""
+    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.float32) for f in frames]
+    han = cv2.createHanningWindow((W, H), cv2.CV_32F)
+    ref = grays[warmup]
+    return np.array([cv2.phaseCorrelate(ref, g, han)[0][1] for g in grays[warmup:]])
+
+
+def test_vertical_shake_is_strongly_suppressed():
+    """O caso real reportado: tremor de cima para baixo. Antes da correcao o
+    filtro de velocidade constante parava em ~72% e continuava visivel."""
+    frames, dy = _vertical_shake_frames()
+    raw = np.std(_vertical_residual(frames))
+
+    stab = VideoStabilizer(W, H)
+    out = [stab.process_frame(f) for f in frames]
+    residual = np.std(_vertical_residual(out))
+
+    assert residual < raw * 0.15, (
+        f"tremor vertical ainda visivel: entrada std={raw:.2f}px, "
+        f"saida std={residual:.2f}px (esperado abaixo de {raw * 0.15:.2f}px)"
+    )
+
+
+def test_tuning_changes_output_while_running():
+    """Regressao dos sliders inertes: set_tuning tem de valer nos frames
+    seguintes, sem reiniciar a captura. Uma sequencia continua so, com a
+    mudanca no meio -- reprocessar os mesmos frames criaria um salto de cena
+    que mascararia o efeito."""
+    frames, _ = _vertical_shake_frames(n=300)
+    half = len(frames) // 2
+
+    stab = VideoStabilizer(W, H, strength=0.0)
+    out = []
+    for i, f in enumerate(frames):
+        if i == half:
+            stab.set_tuning(strength=1.0)
+        out.append(stab.process_frame(f))
+
+    # Cada metade medida contra a propria referencia, descartando a transicao.
+    off_residual = np.std(_vertical_residual(out[:half], warmup=30))
+    on_residual = np.std(_vertical_residual(out[half + 30:], warmup=30))
+
+    assert on_residual < off_residual * 0.3, (
+        f"set_tuning nao teve efeito: sem estabilizar={off_residual:.2f}px, "
+        f"depois de ligar={on_residual:.2f}px"
+    )
+
+
+def _run_restart_with(fake, source, retry_delay=0.01, stop_event=None):
+    """Roda run_with_restart com o pipeline trocado por um dublê."""
+    import camera_to_obs
+    original = camera_to_obs.run_pipeline
+    camera_to_obs.run_pipeline = fake
+    try:
+        camera_to_obs.run_with_restart(source, retry_delay=retry_delay,
+                                       stop_event=stop_event, log=lambda *_: None)
+    finally:
+        camera_to_obs.run_pipeline = original
+
+
+def test_camera_restarts_until_told_to_stop():
+    """Placa que da erro ou desconecta tem de voltar sozinha; Parar tem de
+    encerrar de verdade em vez de reconectar pra sempre."""
+    calls = []
+    stop = threading.Event()
+
+    def fake(source, stop_event=None, log=None, **kwargs):
+        calls.append(source)
+        if len(calls) == 1:
+            raise RuntimeError("placa sumiu")   # falha dura
+        if len(calls) == 2:
+            return                              # desconexao silenciosa
+        stop_event.set()                        # usuario apertou Parar
+
+    _run_restart_with(fake, "0", stop_event=stop)
+    assert len(calls) == 3, f"esperava 3 tentativas, houve {len(calls)}"
+    assert stop.is_set()
+
+
+def test_video_file_runs_once():
+    """Arquivo que chega ao fim e termino normal, nao falha: nao pode entrar
+    em loop reproduzindo pra sempre."""
+    calls = []
+
+    def fake(source, stop_event=None, log=None, **kwargs):
+        calls.append(source)
+
+    _run_restart_with(fake, "clipe.mp4")
+    assert len(calls) == 1, f"arquivo reiniciou {len(calls)} vezes"
+
+
 if __name__ == "__main__":
     test_stabilization_reduces_jitter()
     test_intentional_pan_is_not_fought()
     test_processing_is_within_frame_budget()
+    test_vertical_shake_is_strongly_suppressed()
+    test_tuning_changes_output_while_running()
+    test_camera_restarts_until_told_to_stop()
+    test_video_file_runs_once()
     print("OK")

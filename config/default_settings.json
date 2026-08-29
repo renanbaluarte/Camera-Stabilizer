@@ -1,7 +1,7 @@
 {
-  "crop_ratio": 0.97,
-  "min_crop_ratio": 0.80,
-  "kalman_q": 0.001,
-  "kalman_r": 0.1,
+  "strength": 1.0,
+  "smoothing_s": 1.0,
+  "max_keep_ratio": 0.98,
+  "min_keep_ratio": 0.85,
   "detect_intentional_motion": true
 }
