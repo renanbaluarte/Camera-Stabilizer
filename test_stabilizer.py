@@ -206,6 +206,34 @@ def test_rotation_and_noise_are_suppressed():
     assert jit[2] < raw_jit[2] * 0.3, f"rotacao {jit[2]:.3f} (entrada {raw_jit[2]:.3f})"
 
 
+def test_profiles_save_load_delete():
+    """Perfis: salvar, reabrir (novo processo), lembrar o ultimo, excluir.
+    Presets prontos nao podem ser sobrescritos nem excluidos."""
+    import tempfile
+    from pathlib import Path
+    from src.profiles import PRESETS, ProfileStore
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "sub" / "profiles.json"
+        store = ProfileStore(path)
+        assert store.last == next(iter(PRESETS))
+        store.save("Culto domingo", {"smoothing_s": 2.2, "crop": 87, "lookahead": 6})
+        again = ProfileStore(path)
+        assert again.last == "Culto domingo"
+        assert again.get("Culto domingo")["crop"] == 87
+        assert again.get("Culto domingo")["rotation"] is True  # default preenchido
+        for bad in (lambda: again.save(next(iter(PRESETS)), {}),
+                    lambda: again.delete(next(iter(PRESETS)))):
+            try:
+                bad()
+                raise AssertionError("preset foi alterado")
+            except ValueError:
+                pass
+        again.delete("Culto domingo")
+        assert "Culto domingo" not in ProfileStore(path).names()
+        path.write_text("{lixo", encoding="utf-8")
+        assert ProfileStore(path).names() == list(PRESETS)  # corrompido nao quebra
+
+
 def _run_restart_with(fake, source, retry_delay=0.01, stop_event=None):
     """Roda run_with_restart com o pipeline trocado por um dublê."""
     import camera_to_obs
@@ -256,6 +284,7 @@ if __name__ == "__main__":
     test_vertical_shake_is_strongly_suppressed()
     test_tuning_changes_output_while_running()
     test_rotation_and_noise_are_suppressed()
+    test_profiles_save_load_delete()
     test_camera_restarts_until_told_to_stop()
     test_video_file_runs_once()
     print("OK")

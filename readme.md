@@ -20,6 +20,19 @@ Benchmark (`python bench/benchmark.py`, 720p, 8/13Hz shake + 0.35deg roll + sens
 | v2 (look-ahead 4) | **0.19 px** | **0.024 deg** | 4.9 |
 | v2 (look-ahead 0, no delay) | 0.67 px | 0.067 deg | 5.4 |
 
+## Profiles & recommended settings
+
+The GUI has a **Perfil** bar: pick a preset or one of your profiles, then **Salvar** / **Salvar como...** / **Excluir**. Profiles store every field (source, resolution, sliders, checkboxes) in `%APPDATA%\CameraStabilizer\profiles.json`, and the last used profile is reopened on startup. Built-in presets are read-only.
+
+| Preset | Smoothing | Crop | Look-ahead | When to use |
+|---|---|---|---|---|
+| Recomendado - camera fixa | 1.5 s | 90% | 4 | Default for a fixed/PTZ camera on a vibrating structure |
+| Tremor forte | 2.0 s | 85% | 8 | Shake still visible, or borders get hit |
+| Sem atraso | 1.0 s | 90% | 0 | You don't want to touch OBS audio sync |
+| PTZ com muito movimento | 0.6 s | 92% | 4 | Frequent pans/zooms during the service |
+
+All presets: sensitivity 100, rotation on, intentional-motion detection on, adaptive crop off. Remember: look-ahead N frames => OBS audio *Sync Offset* = N x 33 ms at 30 fps.
+
 ## Key Features
 
 - Optical flow-based motion estimation with frame downsampling for low latency

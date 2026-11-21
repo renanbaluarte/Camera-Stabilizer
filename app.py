@@ -10,12 +10,13 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
 
 import cv2
 from PIL import Image, ImageTk
 
 from camera_to_obs import run_with_restart
+from src.profiles import ProfileStore
 from src.stabilizer import sensitivity_to_strength
 
 PREVIEW_WIDTH = 480
@@ -35,7 +36,9 @@ class App:
         self._notice = "parado"  # ultima mensagem do pipeline (reconexao, erro)
         self._last_frame_at = 0.0
 
+        self._profiles = ProfileStore()
         self._build_ui()
+        self._load_profile(self._profiles.last)
         self._poll_preview()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -51,9 +54,91 @@ class App:
         var.trace_add("write", lambda *_: value.config(text=fmt.format(var.get())))
         value.config(text=fmt.format(var.get()))
 
+    def _build_profile_bar(self):
+        bar = ttk.LabelFrame(self.root, text="Perfil", padding=(10, 4))
+        bar.grid(row=0, column=0, sticky="we", padx=10, pady=(10, 0))
+        self.profile_var = tk.StringVar()
+        self.profile_box = ttk.Combobox(bar, textvariable=self.profile_var, state="readonly",
+                                        width=30, values=self._profiles.names())
+        self.profile_box.pack(side="left")
+        self.profile_box.bind("<<ComboboxSelected>>",
+                              lambda _e: self._load_profile(self.profile_var.get()))
+        ttk.Button(bar, text="Salvar", width=7, command=self._save_profile).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="Salvar como...", command=self._save_profile_as).pack(side="left", padx=(4, 0))
+        ttk.Button(bar, text="Excluir", width=7, command=self._delete_profile).pack(side="left", padx=(4, 0))
+
+    def _settings(self):
+        return {
+            "source": self.source_var.get(), "width": self.width_var.get(),
+            "height": self.height_var.get(), "fps": self.fps_var.get(),
+            "sensitivity": round(self.sensitivity_var.get()),
+            "smoothing_s": round(self.smoothing_var.get(), 2),
+            "crop": round(self.crop_var.get()), "lookahead": round(self.lookahead_var.get()),
+            "intentional": self.intentional_var.get(), "rotation": self.rotation_var.get(),
+            "adaptive": self.adaptive_var.get(), "overlay": self.overlay_var.get(),
+        }
+
+    def _load_profile(self, name):
+        try:
+            s = self._profiles.get(name)
+        except KeyError:
+            return
+        self.source_var.set(s["source"])
+        self.width_var.set(s["width"])
+        self.height_var.set(s["height"])
+        self.fps_var.set(s["fps"])
+        self.sensitivity_var.set(s["sensitivity"])
+        self.smoothing_var.set(s["smoothing_s"])
+        self.crop_var.set(s["crop"])
+        self.lookahead_var.set(s["lookahead"])
+        self.intentional_var.set(s["intentional"])
+        self.rotation_var.set(s["rotation"])
+        self.adaptive_var.set(s["adaptive"])
+        self.overlay_var.set(s["overlay"])
+        self.profile_var.set(name)
+        self._profiles.set_last(name)
+        self._apply_tuning()  # vale na hora, mesmo rodando
+
+    def _save_profile(self):
+        name = self.profile_var.get()
+        if not name or self._profiles.is_preset(name):
+            self._save_profile_as()  # preset pronto: pede um nome novo
+            return
+        self._profiles.save(name, self._settings())
+        self.status_var.set(f"perfil '{name}' salvo")
+
+    def _save_profile_as(self):
+        name = simpledialog.askstring("Salvar perfil", "Nome do perfil:", parent=self.root)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        if name in self._profiles.names() and not self._profiles.is_preset(name):
+            if not messagebox.askyesno("Salvar perfil", f"Substituir o perfil '{name}'?"):
+                return
+        try:
+            self._profiles.save(name, self._settings())
+        except ValueError as exc:
+            messagebox.showerror("Salvar perfil", str(exc))
+            return
+        self.profile_box.config(values=self._profiles.names())
+        self.profile_var.set(name)
+        self.status_var.set(f"perfil '{name}' salvo")
+
+    def _delete_profile(self):
+        name = self.profile_var.get()
+        if self._profiles.is_preset(name):
+            messagebox.showinfo("Excluir perfil", "Presets prontos nao podem ser excluidos.")
+            return
+        if not name or not messagebox.askyesno("Excluir perfil", f"Excluir o perfil '{name}'?"):
+            return
+        self._profiles.delete(name)
+        self.profile_box.config(values=self._profiles.names())
+        self._load_profile(self._profiles.last)
+
     def _build_ui(self):
+        self._build_profile_bar()
         form = ttk.Frame(self.root, padding=10)
-        form.grid(row=0, column=0, sticky="nw")
+        form.grid(row=1, column=0, sticky="nw")
 
         ttk.Label(form, text="Fonte (indice da camera ou arquivo)").grid(row=0, column=0, sticky="w")
         self.source_var = tk.StringVar(value="0")
@@ -115,7 +200,7 @@ class App:
                   ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         self.preview_label = ttk.Label(self.root)
-        self.preview_label.grid(row=0, column=1, padx=10, pady=10)
+        self.preview_label.grid(row=0, column=1, rowspan=2, padx=10, pady=10)
 
     def _tuning(self):
         return {
