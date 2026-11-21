@@ -1,0 +1,19 @@
+{
+  "last": "Igreja",
+  "profiles": {
+    "Igreja": {
+      "source": "0",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "sensitivity": 100,
+      "smoothing_s": 1.5,
+      "crop": 90,
+      "lookahead": 4,
+      "intentional": true,
+      "rotation": true,
+      "adaptive": false,
+      "overlay": false
+    }
+  }
+}

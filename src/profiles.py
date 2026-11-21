@@ -9,6 +9,7 @@ Formato do arquivo:
 """
 import json
 import os
+import sys
 from pathlib import Path
 
 # Valores da interface (nao do estabilizador): e o que os sliders mostram.
@@ -27,6 +28,13 @@ PRESETS = {
 }
 
 
+def bundled_seed_path():
+    """config/default_profiles.json, tanto rodando do codigo quanto no .exe
+    do PyInstaller (que extrai o --add-data em sys._MEIPASS)."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / "config" / "default_profiles.json"
+
+
 def default_path():
     base = os.environ.get("APPDATA")
     folder = Path(base) / "CameraStabilizer" if base else Path.home() / ".camera_stabilizer"
@@ -34,10 +42,11 @@ def default_path():
 
 
 class ProfileStore:
-    def __init__(self, path=None):
+    def __init__(self, path=None, seed_path=None):
         self.path = Path(path) if path else default_path()
-        self._data = {"last": None, "profiles": {}}
+        self._data = {"last": None, "profiles": {}, "seeded": []}
         self._load()
+        self._seed(Path(seed_path) if seed_path else bundled_seed_path())
 
     def _load(self):
         try:
@@ -45,8 +54,31 @@ class ProfileStore:
             if isinstance(data.get("profiles"), dict):
                 self._data["profiles"] = data["profiles"]
             self._data["last"] = data.get("last")
+            self._data["seeded"] = list(data.get("seeded", []))
         except (OSError, ValueError, AttributeError):
             pass  # arquivo ausente ou corrompido: comeca do zero
+
+    def _seed(self, seed_path):
+        """Cria os perfis iniciais que vem com o programa. Cada um e criado
+        uma vez so: se o usuario excluir ou editar, a escolha dele vale."""
+        try:
+            seed = json.loads(seed_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        added = False
+        for name, settings in seed.get("profiles", {}).items():
+            if name in self._data["seeded"] or name in PRESETS:
+                continue
+            self._data["profiles"].setdefault(name, settings)
+            self._data["seeded"].append(name)
+            if not self._data["last"] and seed.get("last") == name:
+                self._data["last"] = name
+            added = True
+        if added:
+            try:
+                self._save()
+            except OSError:
+                pass
 
     def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)

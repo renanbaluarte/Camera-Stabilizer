@@ -24,6 +24,8 @@ Benchmark (`python bench/benchmark.py`, 720p, 8/13Hz shake + 0.35deg roll + sens
 
 The GUI has a **Perfil** bar: pick a preset or one of your profiles, then **Salvar** / **Salvar como...** / **Excluir**. Profiles store every field (source, resolution, sliders, checkboxes) in `%APPDATA%\CameraStabilizer\profiles.json`, and the last used profile is reopened on startup. Built-in presets are read-only.
 
+On first run the app also creates an editable profile called **Igreja** (recommended settings, already selected), shipped in `config/default_profiles.json` and bundled by `build.bat`. It is created only once: if you edit or delete it, your choice is kept. To ship different starting profiles, edit that file before building.
+
 | Preset | Smoothing | Crop | Look-ahead | When to use |
 |---|---|---|---|---|
 | Recomendado - camera fixa | 1.5 s | 90% | 4 | Default for a fixed/PTZ camera on a vibrating structure |

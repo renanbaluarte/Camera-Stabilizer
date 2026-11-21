@@ -214,10 +214,10 @@ def test_profiles_save_load_delete():
     from src.profiles import PRESETS, ProfileStore
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "sub" / "profiles.json"
-        store = ProfileStore(path)
+        store = ProfileStore(path, seed_path=Path(d) / "nenhum.json")
         assert store.last == next(iter(PRESETS))
         store.save("Culto domingo", {"smoothing_s": 2.2, "crop": 87, "lookahead": 6})
-        again = ProfileStore(path)
+        again = ProfileStore(path, seed_path=Path(d) / "nenhum.json")
         assert again.last == "Culto domingo"
         assert again.get("Culto domingo")["crop"] == 87
         assert again.get("Culto domingo")["rotation"] is True  # default preenchido
@@ -231,7 +231,23 @@ def test_profiles_save_load_delete():
         again.delete("Culto domingo")
         assert "Culto domingo" not in ProfileStore(path).names()
         path.write_text("{lixo", encoding="utf-8")
-        assert ProfileStore(path).names() == list(PRESETS)  # corrompido nao quebra
+        assert ProfileStore(path, seed_path=Path(d) / "nenhum.json").names() == list(PRESETS)  # corrompido nao quebra
+
+
+def test_bundled_profile_is_created_once():
+    """O perfil 'Igreja' vem com o programa (config/default_profiles.json),
+    e criado na primeira execucao, ja selecionado, e editavel. Se o usuario
+    excluir, nao volta sozinho."""
+    import tempfile
+    from pathlib import Path
+    from src.profiles import ProfileStore
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "profiles.json"
+        store = ProfileStore(path)
+        assert store.last == "Igreja" and not store.is_preset("Igreja")
+        assert store.get("Igreja")["smoothing_s"] == 1.5
+        store.delete("Igreja")
+        assert "Igreja" not in ProfileStore(path).names()
 
 
 def _run_restart_with(fake, source, retry_delay=0.01, stop_event=None):
@@ -285,6 +301,7 @@ if __name__ == "__main__":
     test_tuning_changes_output_while_running()
     test_rotation_and_noise_are_suppressed()
     test_profiles_save_load_delete()
+    test_bundled_profile_is_created_once()
     test_camera_restarts_until_told_to_stop()
     test_video_file_runs_once()
     print("OK")
