@@ -77,23 +77,34 @@ class App:
         # disparar durante a construcao e _tuning() le todas elas.
         self.sensitivity_var = tk.DoubleVar(value=100)
         self.smoothing_var = tk.DoubleVar(value=1.0)
-        self.crop_var = tk.DoubleVar(value=85)
+        self.crop_var = tk.DoubleVar(value=90)
+        self.lookahead_var = tk.DoubleVar(value=4)
         self.intentional_var = tk.BooleanVar(value=True)
+        self.rotation_var = tk.BooleanVar(value=True)
+        self.adaptive_var = tk.BooleanVar(value=False)
         self.overlay_var = tk.BooleanVar(value=False)
 
         self._slider(form, 2, "Sensibilidade", self.sensitivity_var, 0, 100, "{:.0f}")
         self._slider(form, 3, "Suavizacao (s)", self.smoothing_var, 0.2, 3.0, "{:.2f}")
         self._slider(form, 4, "Crop maximo (%)", self.crop_var, 80, 98, "{:.0f}")
+        self._slider(form, 5, "Atraso / look-ahead (frames)", self.lookahead_var, 0, 15, "{:.0f}")
 
-        ttk.Checkbutton(form, text="Detectar movimento intencional (pan/tilt/zoom)",
-                        variable=self.intentional_var, command=self._apply_tuning
-                        ).grid(row=5, column=0, columnspan=3, sticky="w")
+        checks = [
+            ("Detectar movimento intencional (pan/tilt)", self.intentional_var, self._apply_tuning),
+            ("Corrigir rotacao (recomendado)", self.rotation_var, self._apply_tuning),
+            ("Crop adaptativo (zoom so quando precisa)", self.adaptive_var, self._apply_tuning),
+            ("Mostrar overlay de debug", self.overlay_var, None),
+        ]
+        for i, (text, var, cmd) in enumerate(checks):
+            ttk.Checkbutton(form, text=text, variable=var, command=cmd
+                            ).grid(row=6 + i, column=0, columnspan=3, sticky="w")
 
-        ttk.Checkbutton(form, text="Mostrar overlay de debug",
-                        variable=self.overlay_var).grid(row=6, column=0, columnspan=3, sticky="w")
+        ttk.Label(form, text="Dica: com atraso N, ponha N x 33ms de atraso\n"
+                             "de sincronia no audio do OBS (30fps).",
+                  foreground="#666").grid(row=10, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         btns = ttk.Frame(form)
-        btns.grid(row=7, column=0, columnspan=3, pady=(8, 0), sticky="w")
+        btns.grid(row=11, column=0, columnspan=3, pady=(8, 0), sticky="w")
         self.start_btn = ttk.Button(btns, text="Iniciar", command=self._start)
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(btns, text="Parar", command=self._stop, state="disabled")
@@ -101,7 +112,7 @@ class App:
 
         self.status_var = tk.StringVar(value="parado")
         ttk.Label(form, textvariable=self.status_var, wraplength=300, justify="left"
-                  ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
+                  ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         self.preview_label = ttk.Label(self.root)
         self.preview_label.grid(row=0, column=1, padx=10, pady=10)
@@ -112,6 +123,9 @@ class App:
             "smoothing_s": self.smoothing_var.get(),
             "min_keep_ratio": self.crop_var.get() / 100.0,
             "detect_intentional_motion": self.intentional_var.get(),
+            "stabilize_rotation": self.rotation_var.get(),
+            "adaptive_crop": self.adaptive_var.get(),
+            "lookahead_frames": int(round(self.lookahead_var.get())),
         }
 
     def _apply_tuning(self):
@@ -201,7 +215,9 @@ class App:
             cv2.putText(preview, f"{stats['fps']:.0f}fps {stats['frame_ms']:.0f}ms "
                                  f"crop {stats['crop_ratio'] * 100:.0f}%",
                         (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(preview, f"corrigindo {abs(corr_y):.0f}px vert",
+            cv2.putText(preview, f"corrigindo {abs(corr_y):.0f}px vert  "
+                                 f"rot {stats.get('rotation', 0):+.2f}deg  "
+                                 f"{stats.get('points', 0)} pts",
                         (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         self._last_frame_at = time.monotonic()
@@ -225,7 +241,8 @@ class App:
             mode = "pan/tilt" if stats["intentional"] > 0.6 else "vibracao"
             self.status_var.set(
                 f"rodando - {stats['fps']:.0f} fps / {stats['frame_ms']:.0f} ms por frame\n"
-                f"crop {stats['crop_ratio'] * 100:.0f}% - corrigindo {corr_y:.0f}px vert - {mode}"
+                f"crop {stats['crop_ratio'] * 100:.0f}% - corrigindo {corr_y:.0f}px vert, "
+                f"{stats.get('rotation', 0):+.2f} graus - {mode}"
             )
         except queue.Empty:
             pass

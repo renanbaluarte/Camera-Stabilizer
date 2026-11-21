@@ -2,6 +2,24 @@
 
 A high-performance video stabilization plugin for OBS Studio designed to eliminate vibration and jitter from fixed PTZ cameras in high-vibration environments (such as churches with metal structures). Implements optical flow motion estimation combined with a high-pass baseline filter and adaptive cropping to maintain video quality while removing unwanted shake.
 
+## What's new in v2
+
+Inspired by LiveVisionKit, rebuilt for the current OBS (via Virtual Camera):
+
+- **Rotation correction** - similarity model (translation + rotation), fitted with RANSAC. On the realistic benchmark rotation alone was responsible for most of the residual shake v1 left behind.
+- **Robust tracking** - persistent feature tracks spread over an 8x6 grid, forward-backward LK check, CLAHE for dark church interiors. People walking in front of the camera are rejected as outliers.
+- **Look-ahead smoothing** - an optional delay of N frames (default 4, ~133ms) enables a centered, zero-lag Gaussian filter before the high-pass baseline. Set the same delay as *Sync Offset* on the audio in OBS (N x 33ms at 30fps).
+- **Single warp** - correction and crop zoom in one `warpAffine` (sharper, faster), and a fixed crop by default so the picture never "breathes".
+
+Benchmark (`python bench/benchmark.py`, 720p, 8/13Hz shake + 0.35deg roll + sensor noise + moving person):
+
+| | frame-to-frame jitter Y | rotation jitter | ms/frame |
+|---|---|---|---|
+| raw input | 12.48 px | 0.262 deg | - |
+| v1 | 2.39 px | 0.262 deg | 7.2 |
+| v2 (look-ahead 4) | **0.19 px** | **0.024 deg** | 4.9 |
+| v2 (look-ahead 0, no delay) | 0.67 px | 0.067 deg | 5.4 |
+
 ## Key Features
 
 - Optical flow-based motion estimation with frame downsampling for low latency
@@ -113,6 +131,10 @@ Edit `config/default_settings.json` to adjust default parameters:
 | `max_keep_ratio`            | 0.80-1.00    | Least-cropped state, used when the picture is calm         |
 | `min_keep_ratio`            | 0.80-0.95    | Floor: never crop beyond this limit                        |
 | `detect_intentional_motion` | true/false   | Enable pan/tilt/zoom preservation                          |
+| `stabilize_rotation`        | true/false   | Correct camera roll (recommended)                          |
+| `stabilize_zoom`            | true/false   | Correct scale jitter (off: would fight PTZ zoom)           |
+| `adaptive_crop`             | true/false   | Zoom in only when needed (off = fixed crop at `min_keep_ratio`) |
+| `lookahead_frames`          | 0-15         | Output delay for zero-lag smoothing; match OBS audio offset |
 
 ### Sensitivity Slider (GUI Only)
 

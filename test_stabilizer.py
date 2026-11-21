@@ -188,6 +188,24 @@ def test_tuning_changes_output_while_running():
     )
 
 
+def test_rotation_and_noise_are_suppressed():
+    """Caso realista: tremor subpixel + rotacao + ruido de sensor + pessoa
+    andando na frente. A v1 (so translacao) deixava ~2.4px de tremor
+    frame-a-frame aqui; exigimos menos de 30% do tremor de entrada em y e
+    em rotacao."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent / "bench"))
+    import benchmark as b
+    frames = b.make_frames(n=120)
+    _, raw_jit = b.residual(frames)
+    stab = VideoStabilizer(b.W, b.H, fps=b.FPS)
+    out = [stab.process_frame(f) for f in frames]
+    _, jit = b.residual(out)
+    assert jit[1] < raw_jit[1] * 0.3, f"tremor y {jit[1]:.2f}px (entrada {raw_jit[1]:.2f})"
+    assert jit[2] < raw_jit[2] * 0.3, f"rotacao {jit[2]:.3f} (entrada {raw_jit[2]:.3f})"
+
+
 def _run_restart_with(fake, source, retry_delay=0.01, stop_event=None):
     """Roda run_with_restart com o pipeline trocado por um dublê."""
     import camera_to_obs
@@ -237,6 +255,7 @@ if __name__ == "__main__":
     test_processing_is_within_frame_budget()
     test_vertical_shake_is_strongly_suppressed()
     test_tuning_changes_output_while_running()
+    test_rotation_and_noise_are_suppressed()
     test_camera_restarts_until_told_to_stop()
     test_video_file_runs_once()
     print("OK")

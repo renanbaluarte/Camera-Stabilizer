@@ -2,6 +2,10 @@
   "strength": 1.0,
   "smoothing_s": 1.0,
   "max_keep_ratio": 0.98,
-  "min_keep_ratio": 0.85,
-  "detect_intentional_motion": true
+  "min_keep_ratio": 0.90,
+  "detect_intentional_motion": true,
+  "stabilize_rotation": true,
+  "stabilize_zoom": false,
+  "adaptive_crop": false,
+  "lookahead_frames": 4
 }

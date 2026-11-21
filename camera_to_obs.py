@@ -97,6 +97,8 @@ def run_pipeline(source, fps=30, width=1920, height=1080, config=None,
                         "motion": stab.last_motion,
                         "correction": stab.last_correction,
                         "intentional": stab.intentional_ratio,
+                        "rotation": stab.last_rotation_deg,
+                        "points": stab.tracked_points,
                     }
                     frame_callback(frame, stabilized, stats)
     finally:
