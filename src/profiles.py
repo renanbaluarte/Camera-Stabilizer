@@ -15,16 +15,21 @@ from pathlib import Path
 # Valores da interface (nao do estabilizador): e o que os sliders mostram.
 DEFAULTS = {
     "source": "0", "width": 1920, "height": 1080, "fps": 30,
-    "sensitivity": 100, "smoothing_s": 1.5, "crop": 90, "lookahead": 4,
+    "sensitivity": 100, "smoothing_s": 1.0, "crop": 90, "lookahead": 8,
+    "jelly": 100, "precision": "Alta",
     "intentional": True, "rotation": True, "adaptive": False, "overlay": False,
 }
 
-# Presets somente leitura. Ver README > "Configuracoes recomendadas".
+# Precisao do rastreamento -> largura da imagem usada no rastreio.
+PRECISION_WIDTH = {"Normal": 640, "Alta": 960}
+
+# Presets somente leitura. Ver README > "Profiles & recommended settings".
 PRESETS = {
-    "Recomendado - camera fixa": {},
-    "Tremor forte": {"smoothing_s": 2.0, "crop": 85, "lookahead": 8},
-    "Sem atraso (nao mexer no audio)": {"smoothing_s": 1.0, "lookahead": 0},
-    "PTZ com muito movimento": {"smoothing_s": 0.6, "crop": 92, "lookahead": 4},
+    "Recomendado - maxima estabilidade": {},
+    "Tremor forte": {"smoothing_s": 1.5, "crop": 85, "lookahead": 12},
+    "Sem atraso (nao mexer no audio)": {"lookahead": 0},
+    "PTZ com muito movimento": {"smoothing_s": 0.6, "crop": 92, "lookahead": 6},
+    "PC mais fraco": {"precision": "Normal"},
 }
 
 

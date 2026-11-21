@@ -16,7 +16,7 @@ import cv2
 from PIL import Image, ImageTk
 
 from camera_to_obs import run_with_restart
-from src.profiles import ProfileStore
+from src.profiles import PRECISION_WIDTH, ProfileStore
 from src.stabilizer import sensitivity_to_strength
 
 PREVIEW_WIDTH = 480
@@ -74,6 +74,7 @@ class App:
             "sensitivity": round(self.sensitivity_var.get()),
             "smoothing_s": round(self.smoothing_var.get(), 2),
             "crop": round(self.crop_var.get()), "lookahead": round(self.lookahead_var.get()),
+            "jelly": round(self.jelly_var.get()), "precision": self.precision_var.get(),
             "intentional": self.intentional_var.get(), "rotation": self.rotation_var.get(),
             "adaptive": self.adaptive_var.get(), "overlay": self.overlay_var.get(),
         }
@@ -91,6 +92,8 @@ class App:
         self.smoothing_var.set(s["smoothing_s"])
         self.crop_var.set(s["crop"])
         self.lookahead_var.set(s["lookahead"])
+        self.jelly_var.set(s["jelly"])
+        self.precision_var.set(s["precision"] if s["precision"] in PRECISION_WIDTH else "Alta")
         self.intentional_var.set(s["intentional"])
         self.rotation_var.set(s["rotation"])
         self.adaptive_var.set(s["adaptive"])
@@ -163,7 +166,9 @@ class App:
         self.sensitivity_var = tk.DoubleVar(value=100)
         self.smoothing_var = tk.DoubleVar(value=1.0)
         self.crop_var = tk.DoubleVar(value=90)
-        self.lookahead_var = tk.DoubleVar(value=4)
+        self.lookahead_var = tk.DoubleVar(value=8)
+        self.jelly_var = tk.DoubleVar(value=100)
+        self.precision_var = tk.StringVar(value="Alta")
         self.intentional_var = tk.BooleanVar(value=True)
         self.rotation_var = tk.BooleanVar(value=True)
         self.adaptive_var = tk.BooleanVar(value=False)
@@ -173,6 +178,13 @@ class App:
         self._slider(form, 3, "Suavizacao (s)", self.smoothing_var, 0.2, 3.0, "{:.2f}")
         self._slider(form, 4, "Crop maximo (%)", self.crop_var, 80, 98, "{:.0f}")
         self._slider(form, 5, "Atraso / look-ahead (frames)", self.lookahead_var, 0, 15, "{:.0f}")
+        self._slider(form, 6, "Correcao de geleia (%)", self.jelly_var, 0, 100, "{:.0f}")
+
+        ttk.Label(form, text="Precisao do rastreamento").grid(row=7, column=0, sticky="w")
+        prec = ttk.Combobox(form, textvariable=self.precision_var, state="readonly", width=8,
+                            values=list(PRECISION_WIDTH))
+        prec.grid(row=7, column=1, sticky="w")
+        prec.bind("<<ComboboxSelected>>", lambda _e: self._apply_tuning())
 
         checks = [
             ("Detectar movimento intencional (pan/tilt)", self.intentional_var, self._apply_tuning),
@@ -182,14 +194,21 @@ class App:
         ]
         for i, (text, var, cmd) in enumerate(checks):
             ttk.Checkbutton(form, text=text, variable=var, command=cmd
-                            ).grid(row=6 + i, column=0, columnspan=3, sticky="w")
+                            ).grid(row=8 + i, column=0, columnspan=3, sticky="w")
 
-        ttk.Label(form, text="Dica: com atraso N, ponha N x 33ms de atraso\n"
-                             "de sincronia no audio do OBS (30fps).",
-                  foreground="#666").grid(row=10, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        # Quanto atrasar o audio no OBS para a voz bater com a imagem.
+        delay = ttk.LabelFrame(form, text="Atraso para por no audio do OBS", padding=(8, 2))
+        delay.grid(row=12, column=0, columnspan=3, sticky="we", pady=(6, 0))
+        self.delay_var = tk.StringVar()
+        ttk.Label(delay, textvariable=self.delay_var, font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        self.delay_detail_var = tk.StringVar()
+        ttk.Label(delay, textvariable=self.delay_detail_var, foreground="#666", justify="left").pack(anchor="w")
+        self.lookahead_var.trace_add("write", lambda *_: self._update_delay())
+        self.fps_var.trace_add("write", lambda *_: self._update_delay())
+        self._update_delay()
 
         btns = ttk.Frame(form)
-        btns.grid(row=11, column=0, columnspan=3, pady=(8, 0), sticky="w")
+        btns.grid(row=13, column=0, columnspan=3, pady=(8, 0), sticky="w")
         self.start_btn = ttk.Button(btns, text="Iniciar", command=self._start)
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(btns, text="Parar", command=self._stop, state="disabled")
@@ -197,7 +216,7 @@ class App:
 
         self.status_var = tk.StringVar(value="parado")
         ttk.Label(form, textvariable=self.status_var, wraplength=300, justify="left"
-                  ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(8, 0))
+                  ).grid(row=14, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         self.preview_label = ttk.Label(self.root)
         self.preview_label.grid(row=0, column=1, rowspan=2, padx=10, pady=10)
@@ -211,7 +230,30 @@ class App:
             "stabilize_rotation": self.rotation_var.get(),
             "adaptive_crop": self.adaptive_var.get(),
             "lookahead_frames": int(round(self.lookahead_var.get())),
+            "jelly_strength": self.jelly_var.get() / 100.0,
+            "tracking_width": PRECISION_WIDTH.get(self.precision_var.get(), 960),
         }
+
+    def _update_delay(self, stats=None):
+        """Mostra o atraso de audio: estimado pelo slider quando parado,
+        medido (look-ahead + processamento real) quando rodando."""
+        try:
+            fps = max(1, int(self.fps_var.get()))
+        except (tk.TclError, ValueError):
+            return
+        n = int(round(self.lookahead_var.get()))
+        lookahead_ms = n * 1000.0 / fps
+        if stats is not None:
+            self.delay_var.set(f"{stats['audio_delay_ms']:.0f} ms")
+            self.delay_detail_var.set(
+                f"{stats['lookahead']} frames de look-ahead = {stats['lookahead'] * 1000.0 / fps:.0f} ms"
+                f" + processamento {stats['frame_ms']:.0f} ms\n"
+                "OBS: Propriedades avancadas de audio > Sincronia")
+        else:
+            self.delay_var.set(f"~{lookahead_ms + 20:.0f} ms")
+            self.delay_detail_var.set(
+                f"{n} frames de look-ahead = {lookahead_ms:.0f} ms + processamento (~20 ms)\n"
+                "o valor exato aparece quando estiver rodando")
 
     def _apply_tuning(self):
         """Chamado a cada mexida de slider. Se ja esta rodando, muda na hora.
@@ -301,7 +343,7 @@ class App:
                                  f"crop {stats['crop_ratio'] * 100:.0f}%",
                         (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             cv2.putText(preview, f"corrigindo {abs(corr_y):.0f}px vert  "
-                                 f"rot {stats.get('rotation', 0):+.2f}deg  "
+                                 f"rot {stats['rotation']:+.2f}deg  geleia {stats['jelly']:.1f}px  "
                                  f"{stats.get('points', 0)} pts",
                         (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
@@ -327,8 +369,9 @@ class App:
             self.status_var.set(
                 f"rodando - {stats['fps']:.0f} fps / {stats['frame_ms']:.0f} ms por frame\n"
                 f"crop {stats['crop_ratio'] * 100:.0f}% - corrigindo {corr_y:.0f}px vert, "
-                f"{stats.get('rotation', 0):+.2f} graus - {mode}"
+                f"{stats['rotation']:+.2f} graus, geleia {stats['jelly']:.1f}px - {mode}"
             )
+            self._update_delay(stats)
         except queue.Empty:
             pass
 
@@ -336,6 +379,8 @@ class App:
         # do pipeline em vez de deixar as estatisticas velhas congeladas.
         if time.monotonic() - self._last_frame_at > 1.0:
             self.status_var.set(self._notice)
+            if self._stab is None:
+                self._update_delay()
         self.root.after(33, self._poll_preview)
 
 

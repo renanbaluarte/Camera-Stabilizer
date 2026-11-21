@@ -188,22 +188,48 @@ def test_tuning_changes_output_while_running():
     )
 
 
-def test_rotation_and_noise_are_suppressed():
-    """Caso realista: tremor subpixel + rotacao + ruido de sensor + pessoa
-    andando na frente. A v1 (so translacao) deixava ~2.4px de tremor
-    frame-a-frame aqui; exigimos menos de 30% do tremor de entrada em y e
-    em rotacao."""
+def _bench():
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent / "bench"))
-    import benchmark as b
-    frames = b.make_frames(n=120)
-    _, raw_jit = b.residual(frames)
-    stab = VideoStabilizer(b.W, b.H, fps=b.FPS)
-    out = [stab.process_frame(f) for f in frames]
-    _, jit = b.residual(out)
-    assert jit[1] < raw_jit[1] * 0.3, f"tremor y {jit[1]:.2f}px (entrada {raw_jit[1]:.2f})"
-    assert jit[2] < raw_jit[2] * 0.3, f"rotacao {jit[2]:.3f} (entrada {raw_jit[2]:.3f})"
+    import benchmark
+    return benchmark
+
+
+def test_rotation_and_noise_are_suppressed():
+    """Caso realista com obturador global: tremor subpixel + rotacao + balanco
+    lento + ruido de sensor + pessoa andando na frente. Medido contra a
+    verdade sintetica (de onde cada pixel de saida veio na cena). A v1 deixava
+    ~2px de tremor frame-a-frame aqui; exigimos menos de 3% da entrada."""
+    b = _bench()
+    clip = b.make_frames(n=150)
+    raw, _, _ = b.measure(clip, b.run_raw(clip)[0])
+    out, _, _ = b.measure(clip, b.run_current(clip)[0])
+    assert out < raw * 0.03, f"tremor {out:.2f}px (entrada {raw:.2f}px)"
+
+
+def test_rolling_shutter_jelly_is_removed():
+    """Sensor CMOS lendo linha a linha (70% do periodo do frame): sob
+    vibracao cada linha anda diferente, o efeito 'geleia'. Uma correcao so
+    de frame inteiro nao tira isso (e a v2 chegava a piorar o tremor)."""
+    b = _bench()
+    clip = b.make_frames(n=150, readout=0.7)
+    raw_jit, raw_jel, _ = b.measure(clip, b.run_raw(clip)[0])
+    jit, jel, _ = b.measure(clip, b.run_current(clip)[0])
+    _, jel_off, _ = b.measure(clip, b.run_current(clip, jelly_strength=0)[0])
+    assert jel < raw_jel * 0.1, f"geleia {jel:.2f}px (entrada {raw_jel:.2f}px)"
+    assert jel < jel_off * 0.2, f"correcao de geleia sem efeito: {jel:.2f} vs {jel_off:.2f}px"
+    assert jit < raw_jit * 0.05, f"tremor {jit:.2f}px (entrada {raw_jit:.2f}px)"
+
+
+def test_audio_delay_matches_lookahead():
+    stab = VideoStabilizer(W, H, fps=30, lookahead_frames=8)
+    assert abs(stab.audio_delay_ms() - 266.7) < 0.1
+    assert abs(stab.audio_delay_ms(processing_ms=20) - 286.7) < 0.1
+    frames, _ = _vertical_shake_frames(n=20)
+    for f in frames:
+        stab.process_frame(f)
+    assert stab.output_index == len(frames) - 1 - 8, "frame devolvido nao e o de N frames atras"
 
 
 def test_profiles_save_load_delete():
@@ -245,7 +271,7 @@ def test_bundled_profile_is_created_once():
         path = Path(d) / "profiles.json"
         store = ProfileStore(path)
         assert store.last == "Igreja" and not store.is_preset("Igreja")
-        assert store.get("Igreja")["smoothing_s"] == 1.5
+        assert store.get("Igreja")["lookahead"] == 8 and store.get("Igreja")["precision"] == "Alta"
         store.delete("Igreja")
         assert "Igreja" not in ProfileStore(path).names()
 
@@ -300,6 +326,8 @@ if __name__ == "__main__":
     test_vertical_shake_is_strongly_suppressed()
     test_tuning_changes_output_while_running()
     test_rotation_and_noise_are_suppressed()
+    test_rolling_shutter_jelly_is_removed()
+    test_audio_delay_matches_lookahead()
     test_profiles_save_load_delete()
     test_bundled_profile_is_created_once()
     test_camera_restarts_until_told_to_stop()

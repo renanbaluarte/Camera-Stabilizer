@@ -6,6 +6,8 @@
   "detect_intentional_motion": true,
   "stabilize_rotation": true,
   "stabilize_zoom": false,
+  "jelly_strength": 1.0,
   "adaptive_crop": false,
-  "lookahead_frames": 4
+  "lookahead_frames": 8,
+  "tracking_width": 960
 }

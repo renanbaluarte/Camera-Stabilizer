@@ -2,23 +2,28 @@
 
 A high-performance video stabilization plugin for OBS Studio designed to eliminate vibration and jitter from fixed PTZ cameras in high-vibration environments (such as churches with metal structures). Implements optical flow motion estimation combined with a high-pass baseline filter and adaptive cropping to maintain video quality while removing unwanted shake.
 
-## What's new in v2
+## What's new in v3
 
-Inspired by LiveVisionKit, rebuilt for the current OBS (via Virtual Camera):
+Built to remove the maximum camera vibration, inspired by LiveVisionKit, for the current OBS (via Virtual Camera):
 
-- **Rotation correction** - similarity model (translation + rotation), fitted with RANSAC. On the realistic benchmark rotation alone was responsible for most of the residual shake v1 left behind.
-- **Robust tracking** - persistent feature tracks spread over an 8x6 grid, forward-backward LK check, CLAHE for dark church interiors. People walking in front of the camera are rejected as outliers.
-- **Look-ahead smoothing** - an optional delay of N frames (default 4, ~133ms) enables a centered, zero-lag Gaussian filter before the high-pass baseline. Set the same delay as *Sync Offset* on the audio in OBS (N x 33ms at 30fps).
-- **Single warp** - correction and crop zoom in one `warpAffine` (sharper, faster), and a fixed crop by default so the picture never "breathes".
+- **Rolling-shutter ("jelly") correction** - CMOS sensors read the picture row by row, so under vibration every row moves differently and the image wobbles like jelly. v3 fits a per-row model (shift + angle for each height band) and undoes it row by row. Rotation and zoom are measured only from horizontal variation, which the rolling shutter doesn't produce, so the shear is no longer mistaken for rotation (v2 did that and *added* wobble on CMOS cameras).
+- **Rotation correction** and **robust tracking** - persistent grid-distributed tracks, forward-backward check, CLAHE for dark interiors, Tukey-weighted fit that rejects people walking by.
+- **Look-ahead smoothing** - a delay of N frames (default 8, ~267 ms) enables a centered zero-lag Gaussian before the high-pass baseline. The GUI shows the exact **audio delay to set in OBS**.
+- **Single resampling pass** (correction + jelly + crop), fixed crop by default so the picture never "breathes".
+- **Capture in its own thread** - MJPG decoding runs in parallel with stabilization, and a capture card that freezes without an error is detected (3 s) and reconnected.
 
-Benchmark (`python bench/benchmark.py`, 720p, 8/13Hz shake + 0.35deg roll + sensor noise + moving person):
+Benchmark (`python bench/benchmark.py`, 720p, 8/13 Hz shake + slow 2 Hz sway + 0.35 deg roll + sensor noise + moving person). Measured against synthetic ground truth: where each output pixel actually came from in the scene.
 
-| | frame-to-frame jitter Y | rotation jitter | ms/frame |
-|---|---|---|---|
-| raw input | 12.48 px | 0.262 deg | - |
-| v1 | 2.39 px | 0.262 deg | 7.2 |
-| v2 (look-ahead 4) | **0.19 px** | **0.024 deg** | 4.9 |
-| v2 (look-ahead 0, no delay) | 0.67 px | 0.067 deg | 5.4 |
+| CMOS camera (rolling shutter 70%) | frame-to-frame shake | jelly |
+|---|---|---|
+| raw input | 14.30 px | 4.74 px |
+| v1 | 5.65 px | 4.39 px |
+| v2 (similarity fit) | 6.48 px | 4.25 px |
+| **v3, precision Alta** | **0.28 px** | **0.17 px** |
+| v3, no delay (look-ahead 0) | 0.54 px | 0.36 px |
+
+With a global-shutter camera: raw 13.82 px -> v1 2.07 px -> **v3 0.09 px**.
+Processing at 1080p: ~18-24 ms/frame on the dev machine (budget at 30 fps: 33 ms).
 
 ## Profiles & recommended settings
 
@@ -26,14 +31,19 @@ The GUI has a **Perfil** bar: pick a preset or one of your profiles, then **Salv
 
 On first run the app also creates an editable profile called **Igreja** (recommended settings, already selected), shipped in `config/default_profiles.json` and bundled by `build.bat`. It is created only once: if you edit or delete it, your choice is kept. To ship different starting profiles, edit that file before building.
 
-| Preset | Smoothing | Crop | Look-ahead | When to use |
-|---|---|---|---|---|
-| Recomendado - camera fixa | 1.5 s | 90% | 4 | Default for a fixed/PTZ camera on a vibrating structure |
-| Tremor forte | 2.0 s | 85% | 8 | Shake still visible, or borders get hit |
-| Sem atraso | 1.0 s | 90% | 0 | You don't want to touch OBS audio sync |
-| PTZ com muito movimento | 0.6 s | 92% | 4 | Frequent pans/zooms during the service |
+| Preset | Smoothing | Crop | Look-ahead | Precision | When to use |
+|---|---|---|---|---|---|
+| Recomendado - maxima estabilidade | 1.0 s | 90% | 8 | Alta | Default: maximum vibration removal |
+| Tremor forte | 1.5 s | 85% | 12 | Alta | Shake still visible, or borders get hit |
+| Sem atraso | 1.0 s | 90% | 0 | Alta | You don't want to touch OBS audio sync |
+| PTZ com muito movimento | 0.6 s | 92% | 6 | Alta | Frequent pans/zooms during the service |
+| PC mais fraco | 1.0 s | 90% | 8 | Normal | "ms por frame" in the status above ~28 ms |
 
-All presets: sensitivity 100, rotation on, intentional-motion detection on, adaptive crop off. Remember: look-ahead N frames => OBS audio *Sync Offset* = N x 33 ms at 30 fps.
+All presets: sensitivity 100, jelly correction 100%, rotation on, intentional-motion detection on, adaptive crop off. The editable **Igreja** profile starts with the recommended values.
+
+### Audio delay in OBS
+
+The stabilized picture comes out N frames late (look-ahead) plus the processing time. The GUI box **"Atraso para por no audio do OBS"** shows the exact value while running (e.g. `282 ms`). In OBS: *Edit > Advanced Audio Properties > Sync Offset* on the audio source(s) of the service, set that value. If the voice still leads slightly (virtual camera buffering varies per PC), add ~30 ms and confirm with a clap test.
 
 ## Key Features
 
@@ -150,6 +160,8 @@ Edit `config/default_settings.json` to adjust default parameters:
 | `stabilize_zoom`            | true/false   | Correct scale jitter (off: would fight PTZ zoom)           |
 | `adaptive_crop`             | true/false   | Zoom in only when needed (off = fixed crop at `min_keep_ratio`) |
 | `lookahead_frames`          | 0-15         | Output delay for zero-lag smoothing; match OBS audio offset |
+| `jelly_strength`            | 0.0-1.0      | Rolling-shutter (jelly) correction amount                  |
+| `tracking_width`            | 640 / 960    | Tracking resolution (precision Normal / Alta)              |
 
 ### Sensitivity Slider (GUI Only)
 
@@ -268,9 +280,8 @@ The stabilizer reopens the capture source on its own every 2 seconds after a
 dropout, and the status line shows "reconectando..." while it retries. Current
 slider values are re-applied to the new session, so tuning is not lost.
 
-Recovery is not automatic in one case: a capture card that hangs without
-returning an error leaves the read blocked, and nothing times it out. If that
-happens, press Parar and Iniciar.
+A capture card that hangs without returning an error is also handled: capture
+runs in its own thread and, after 3 s without frames, the pipeline reconnects.
 
 ### No virtual camera appears in OBS
 
